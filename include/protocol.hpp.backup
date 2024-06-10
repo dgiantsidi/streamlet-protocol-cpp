@@ -1,0 +1,170 @@
+#include "blockchain.hpp"
+#include "crypto.hpp"
+#include "networking.hpp"
+
+namespace protocol {
+
+bool is_leader(int node_id, int epoch) {
+  std::cout << __func__ << " node_id=" << node_id << " "
+            << leader_for_epoch(epoch) << " ";
+  return (node_id == leader_for_epoch(epoch));
+}
+
+#if 0
+blockchain *
+get_longest_notarized_chain(std::vector<std::unique_ptr<blockchain>> &chains) {
+  auto max_length = -1;
+  blockchain *longest_notarized_chain;
+  for (auto &chain : chains) {
+    auto l = chain->get_notarized_length();
+    if (max_length < l) {
+      max_length = l;
+      longest_notarized_chain = chain.get();
+    }
+  }
+  return longest_notarized_chain;
+}
+#endif
+void bcast_msg(std::map<int, std::unique_ptr<network_connection>> &connections,
+               int my_id, uint8_t *msg, size_t msg_sz) {
+  for (auto &connection_node : connections) {
+    if (connection_node.first != my_id) {
+      std::cout << __PRETTY_FUNCTION__ << " send to " << connection_node.first
+                << " w/ msg size=" << msg_sz << "\n";
+      connection_node.second->send(msg, msg_sz);
+    }
+  }
+}
+
+void append_block(block& blk, blockchain *ptr, int leader) {
+  auto *block = ptr->longest_notarized_chain();
+  std::tuple<std::unique_ptr<uint8_t[]>, size_t> serialized_block =
+      block->b.serialize();
+  auto h = compute_hash(std::get<0>(serialized_block).get(),
+                        std::get<1>(serialized_block));
+
+  ::memcpy(blk.parent_h, h.get(), k_hash_size);
+  ptr->block_extends_chain(blk, leader);
+}
+
+void propose(int epoch, block &blk,
+             std::unique_ptr<blockchain> &chain,
+             std::map<int, std::unique_ptr<network_connection>> &connections,
+             int my_id) {
+
+  // (1) append the block to one of the longest notarized chain
+  append_block(blk, chain.get(), my_id); // I am the leader anyways
+  // blockchain *longest_notarized_chain = get_longest_notarized_chain(chains);
+  //blk.chain_id = longest_notarized_chain->get_chain_id();
+
+  // (2) hash + sign the block w/ own key
+  auto signed_blk = longest_notarized_chain->sign_new_block(epoch, blk);
+  auto data_sz = longest_notarized_chain->get_signed_block_size();
+
+  // (3) b-cast to the others
+  bcast_msg(connections, my_id, signed_blk.get(), data_sz);
+
+  // (4) enqueue sent block (pending block)
+  longest_notarized_chain->enqueue_block(blk);
+}
+
+blockchain *validate_longest_notarized_chain(
+    std::unique_ptr<blockchain> &chain, block &blk) {
+  auto max_length = 0;
+  blockchain *longest_notarized_chain;
+  bool valid = false;
+  for (auto &chain : chains) {
+    auto l = chain->get_notarized_length();
+    if (max_length < l) {
+      max_length = l;
+      longest_notarized_chain = chain.get();
+      if (chain->block_extends_chain(blk)) {
+        valid = true;
+      } else {
+        valid = false;
+      }
+    }
+    if ((max_length == l) && (!valid)) {
+      longest_notarized_chain = chain.get();
+      if (chain->block_extends_chain(blk)) {
+        valid = true;
+      }
+    }
+  }
+  return (valid) ? longest_notarized_chain : nullptr;
+}
+
+void vote(int epoch, block &blk,
+          std::unique_ptr<blockchain> &chain,
+          std::map<int, std::unique_ptr<network_connection>> &connections,
+          int my_id) {
+  // (1) validate that blk extends one of the longest notarized chain
+  blockchain *longest_notarized_chain =
+      validate_longest_notarized_chain(chain, blk);
+
+  if (!longest_notarized_chain) {
+    std::cout << __PRETTY_FUNCTION__
+              << " does not extend any of the longest notarized blockchains\n";
+    return;
+  }
+  // (2) sign the block w/ own key
+  // @dimitra: here we re-do the entire computation. We could just sign the blk
+  // because the parent_h etc. remain the same due to the consistency property
+  // of the chain.
+  auto signed_blk = longest_notarized_chain->sign_new_block(epoch, blk);
+  auto data_sz = longest_notarized_chain->get_signed_block_size();
+
+  // (3) b-cast the vote to everyone else
+  bcast_msg(connections, my_id, signed_blk.get(), data_sz);
+}
+
+block incomming_msg(
+    const int cur_epoch, int node_id,
+    std::map<int, std::unique_ptr<network_connection>> &connections) {
+  auto &my_queue = connections[node_id];
+
+  // (1) check for incomming msgs in my network queue
+  if (my_queue->has_msgs()) {
+    auto [signed_msg, msg_sz] = my_queue->receive();
+
+    // (2) validate the message is in the current epoch
+    int msg_epoch = block::get_signed_msg_epoch(signed_msg.get());
+    if (msg_epoch != cur_epoch) {
+      std::cout << __PRETTY_FUNCTION__ << " wrong epoch (" << msg_epoch
+                << " vs " << cur_epoch << ")\n";
+      return block(0, nullptr, nullptr); // just return an empty block
+    }
+
+    std::cout << __PRETTY_FUNCTION__ << " correct epoch (" << msg_epoch
+              << " == " << cur_epoch << ")\n";
+
+    int org_sender = block::get_signed_msg_sender(signed_msg.get());
+    if (validate_signature(signed_msg.get(), org_sender))
+      return block::construct_block(signed_msg.get());
+    /*
+    int org_sender = block::get_signed_msg_sender(signed_msg, msg_sz);
+    int leader_node = leader_for_epoch(cur_epoch);
+    if (org_sender == leader_node) {
+      // the message is "probably" a proposal from the current leader
+
+    } else {
+      // the message is from a follower probably a vote; let's validate this
+      if (validate_signature_leader(signed_msg.get())) {
+        std::cout << __func__ << " msg_sz=" << msg_sz << "\n";
+        block a = block::construct_block(signed_msg.get());
+        a.proposed_from_leader = true;
+        return a;
+      }
+      if (validate_signature(signed_msg.get())) {
+        std::cout << __func__ << " msg_sz=" << msg_sz << "\n";
+        return block::construct_block(signed_msg.get());
+      }
+    }
+    */
+  }
+  std::cout << __PRETTY_FUNCTION__ << " cur_node= " << node_id
+            << " reached that far w/o any message\n";
+  return block(0, nullptr, nullptr); // just return an empty block
+}
+
+} // end namespace protocol

@@ -1,0 +1,67 @@
+#pragma once
+#include "../ll_log.h"
+#if 0
+#include "block.hpp"
+#include "config.hpp"
+#include "crypto.hpp"
+#include <cstring>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <set>
+#include <stdint.h>
+#include <tuple>
+#include <vector>
+
+class blockchain {
+public:
+  // constructors
+  blockchain();
+
+  void finalize_block(const block other);
+    void finalize_blocks();
+
+  void enqueue_block(block other);
+
+  bool block_extends_chain(const block &blk);
+
+  size_t get_signed_block_size();
+
+  std::unique_ptr<uint8_t[]> sign_new_block(int e, block &blk);
+
+  int get_notarized_length();
+
+  using epoch_num = int;
+  struct queued_block {
+    explicit queued_block(const block &blk) : b(blk) {
+      votes.insert(blk.sender_node_id);
+    };
+    explicit queued_block(const block &blk, bool proposed)
+        : b(blk), has_been_proposed(proposed) {
+      votes.insert(blk.sender_node_id);
+    };
+    queued_block(const queued_block &other) : b(other.b), votes(other.votes) {
+
+      has_been_proposed = other.has_been_proposed;
+    }
+    block b;
+    std::set<int> votes;
+    bool has_been_proposed = false;
+  };
+
+  bool is_notarized(const queued_block &q_blk) {
+    if (q_blk.has_been_proposed)
+      return q_blk.votes.size() >= (2 * kNodes) / 3;
+    return false;
+  }
+  int get_chain_id();
+
+private:
+  int length;
+  int id;
+  std::vector<block> log;
+
+  std::vector<queued_block> pending_blocks;
+  std::map<epoch_num, int> pending_blocks_map;
+};
+#endif

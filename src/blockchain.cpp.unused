@@ -1,0 +1,97 @@
+#include "blockchain.hpp"
+#if 0
+blockchain::blockchain() {
+  // put genesis block
+  log.push_back(block(0, nullptr, nullptr));
+  std::cout << __PRETTY_FUNCTION__ << "\n";
+  std::cout << log.size() << "\n";
+  length = 0;
+  id = 0;
+  std::cout << (void *)(this) << "\n";
+}
+// destructor
+
+void blockchain::finalize_block(const block other) {
+  log.push_back(other);
+  length++;
+}
+
+void blockchain::finalize_blocks() {
+  //TODO
+}
+
+void blockchain::enqueue_block(block other) {
+  // if the block is seen
+  if (pending_blocks_map.find(other.epoch) != pending_blocks_map.end()) {
+    auto idx = pending_blocks_map[other.epoch];
+    if (other.equals(pending_blocks[idx].b))
+      pending_blocks[idx].votes.insert(
+          other.sender_node_id); // recal that the std::set will only keep
+                                 // unique elements
+  } else {
+    // if it is a proposal from the leader
+    pending_blocks_map.insert({other.epoch, pending_blocks.size()});
+    if (other.sender_node_id == leader_for_epoch(other.epoch)) {
+      pending_blocks.push_back(queued_block(other, true));
+    } else {
+      pending_blocks.push_back(queued_block(other, false));
+      // what is the node is faster than us? can we still enqueue and only
+      // notarize/finalize if we also receive from leader?
+    }
+  }
+}
+
+bool blockchain::block_extends_chain(const block &blk) {
+  // compute the parent hash
+  auto &last_block = log[log.size() - 1];
+  std::tuple<std::unique_ptr<uint8_t[]>, size_t> serialized_block =
+      last_block.serialize();
+  auto h = compute_hash(std::get<0>(serialized_block).get(),
+                        std::get<1>(serialized_block));
+  if (::memcmp(h.get(), blk.parent_h, k_hash_size) == 0) {
+    return true;
+  }
+  return false;
+}
+
+size_t blockchain::get_signed_block_size() {
+  return block::get_signed_block_size();
+}
+
+std::unique_ptr<uint8_t[]> blockchain::sign_new_block(int e, block &blk) {
+  if (static_cast<int>(log.size()) >= 1) {
+    // compute the parent hash
+
+    // std::cout << __PRETTY_FUNCTION__ << " " << log[log.size() - 1].epoch
+    //           << " block_epoch=" << blk.epoch << " \n";
+    auto last_block = log[log.size() - 1];
+
+    std::tuple<std::unique_ptr<uint8_t[]>, size_t> serialized_block =
+        last_block.serialize();
+    auto h = compute_hash(std::get<0>(serialized_block).get(),
+                          std::get<1>(serialized_block));
+
+    // sign the block
+    ::memcpy(blk.parent_h, h.get(), k_hash_size);
+    auto cur_serialized_block = blk.serialize();
+    return sign_block(std::get<0>(cur_serialized_block).get(),
+                      std::get<1>(cur_serialized_block));
+  }
+  std::cout << __PRETTY_FUNCTION__ << ": sign at an empty log\n";
+  return std::make_unique<uint8_t[]>(1);
+}
+
+int blockchain::get_notarized_length() {
+  int notarized_length = length;
+  for (auto &blk : pending_blocks) {
+    if (is_notarized(blk))
+      notarized_length++;
+    else
+      return notarized_length;
+  }
+  return notarized_length;
+}
+
+int blockchain::get_chain_id() { return id; }
+
+#endif

@@ -1,4 +1,4 @@
-# take-home-project-dimitra-giantsidi
+### Implementation of Streamlet protocol in cpp (https://eprint.iacr.org/2020/088.pdf)
 
 
 ## System dependencies
